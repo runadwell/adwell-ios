@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "AdwellSDK", targets: ["AdwellSDK"])
     ],
     targets: [
-        .target(name: "AdwellSDK"),
+        .target(name: "AdwellSDK", resources: [.copy("PrivacyInfo.xcprivacy")]),
         .testTarget(name: "AdwellSDKTests", dependencies: ["AdwellSDK"])
     ]
 )
