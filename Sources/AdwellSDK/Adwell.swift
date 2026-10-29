@@ -4,7 +4,9 @@ import Foundation
 /// `configure` once at launch, then give `installID` to your billing SDK.
 ///
 /// Nothing here throws, blocks the main thread for network, or crashes the
-/// app: failures are dropped and logged only with `logLevel: .debug`.
+/// app. A wrong key or a key for another app is printed to the console in
+/// debug builds (`[Adwell] Error: …`); release builds stay silent unless
+/// `logLevel: .debug`.
 public enum Adwell {
     public static let version = "0.1.0"
 
@@ -12,6 +14,9 @@ public enum Adwell {
     /// again is a no-op.
     public static func configure(apiKey: String, options: AdwellOptions = .init()) {
         log.enabled = options.logLevel == .debug
+        if endpointOverride == nil, let problem = Problems.key(apiKey, environment: options.environment) {
+            return log.problem(problem + " Adwell is not sending anything.")
+        }
         let url = endpointOverride ?? options.environment.url
         client.start(apiKey: apiKey, endpoint: url, bridge: options.bridge)
     }
@@ -27,7 +32,7 @@ public enum Adwell {
     // MARK: - Internals
 
     static var endpointOverride: URL? // local API in tests
-    private static let log = Log()
+    static let log = Log()
     private static let identity = IdentityCache {
         InstallIdentity.resolve(keychain: KeychainStore(), defaults: DefaultsStore(key: "com.runadwell.install_id"))
     }

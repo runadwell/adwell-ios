@@ -130,8 +130,11 @@ final class Client {
             inFlight = false
             return log.debug("could not encode the install")
         }
-        transport.post(endpoint, apiKey: apiKey, body: body) { [self] status, retryAfter in
-            queue.async { [self] in handle(Outcome.from(status: status, retryAfter: retryAfter), id: id.installID) }
+        let bundleID = req.bundleID
+        transport.post(endpoint, apiKey: apiKey, body: body) { [self] status, retryAfter, answer in
+            queue.async { [self] in
+                handle(Outcome.from(status: status, retryAfter: retryAfter, body: answer, bundleID: bundleID), id: id.installID)
+            }
         }
     }
 
@@ -140,10 +143,10 @@ final class Client {
         switch outcome {
         case .acknowledged:
             acked.write(id)
-            log.debug("install \(id) acknowledged")
+            log.notice("Connected: install \(id) sent to \(endpoint.host ?? "Adwell").")
         case let .stop(reason):
             stopped = true
-            log.debug("stopped: \(reason)")
+            log.problem(reason + " Nothing more is sent until the next launch.")
         case let .retry(after):
             let delay = backoff(attempt: attempt, retryAfter: after)
             attempt += 1
@@ -162,13 +165,37 @@ final class Client {
 }
 
 /// Debug logging, off unless configure asks for it.
+/// Logging. Setup problems and the first successful send are always shown in
+/// debug builds of the app (NSLog, so Xcode and `flutter run` both show them)
+/// and in release builds only with `logLevel: .debug`. Routine retry notes
+/// need `.debug` everywhere.
 final class Log {
     var enabled = false
+    /// Where shown lines go; tests replace it.
+    var sink: (String) -> Void = { NSLog("%@", $0) }
     private static let logger = Logger(subsystem: "com.runadwell.sdk", category: "Adwell")
+
+    #if DEBUG
+    static let debugBuild = true
+    #else
+    static let debugBuild = false
+    #endif
 
     func debug(_ message: @autoclosure () -> String) {
         guard enabled else { return }
         let m = message()
         Log.logger.debug("\(m, privacy: .public)")
+    }
+
+    /// A setup problem the developer must fix.
+    func problem(_ message: String) {
+        guard enabled || Log.debugBuild else { return }
+        sink("[Adwell] Error: \(message)")
+    }
+
+    /// Confirmation that the setup works.
+    func notice(_ message: String) {
+        guard enabled || Log.debugBuild else { return }
+        sink("[Adwell] \(message)")
     }
 }

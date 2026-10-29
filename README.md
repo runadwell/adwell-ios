@@ -37,6 +37,28 @@ Options: `AdwellOptions(environment: .staging, logLevel: .debug)` points at
 Adwell's staging API (`pk_test_…` keys) and logs to the console under
 `com.runadwell.sdk`.
 
+## Setup errors
+
+In debug builds the SDK prints setup problems to the console (Xcode, or
+`flutter run`), each with what to do about it:
+
+```
+[Adwell] Error: pk_test_ keys only work with the staging environment. Use your pk_live_ key, or pass AdwellOptions(environment: .staging). Adwell is not sending anything.
+```
+
+- Checked at `configure`, before anything is sent: no key, spaces or a line
+  break around it, not a `pk_live_`/`pk_test_` key, a truncated key, a key
+  for the other environment.
+- Reported from Adwell's answer: an unknown or revoked key, a key for
+  another app (names your bundle id), any other rejection with Adwell's
+  reason.
+- When it works: `[Adwell] Connected: install <id> sent to api.runadwell.com.`
+  (once per install).
+
+Keys are shown cut short (`pk_live_Ab3_…`). Release builds print nothing
+unless you pass `logLevel: .debug`. Network failures are not errors: the SDK
+retries quietly.
+
 ## What it sends
 
 Once per install, to `https://api.runadwell.com/v1/ingest/install`: the

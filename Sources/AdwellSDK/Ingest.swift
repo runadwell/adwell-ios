@@ -68,15 +68,12 @@ enum Outcome: Equatable {
     /// Offline, rate limited or the server is down: try again later.
     case retry(after: TimeInterval?)
 
-    static func from(status: Int?, retryAfter: String?) -> Outcome {
+    static func from(status: Int?, retryAfter: String?, body: Data? = nil, bundleID: String = "") -> Outcome {
         guard let status else { return .retry(after: nil) } // no response: offline, DNS, TLS
         switch status {
         case 200..<300: return .acknowledged
-        case 401: return .stop(reason: "invalid publishable key")
-        case 403: return .stop(reason: "the key belongs to another bundle id or platform")
-        case 400, 409, 413: return .stop(reason: "request rejected (\(status))")
         case 408, 429, 500...: return .retry(after: retryAfter.flatMap(TimeInterval.init).map { min(max($0, 1), 3600) })
-        default: return .stop(reason: "unexpected status \(status)")
+        default: return .stop(reason: Problems.rejected(status: status, body: body, bundleID: bundleID))
         }
     }
 }
@@ -89,7 +86,7 @@ func backoff(attempt: Int, retryAfter: TimeInterval?) -> TimeInterval {
 
 /// Sends one request; nil status means no HTTP response.
 protocol Transport {
-    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (_ status: Int?, _ retryAfter: String?) -> Void)
+    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (_ status: Int?, _ retryAfter: String?, _ body: Data?) -> Void)
 }
 
 struct URLSessionTransport: Transport {
@@ -101,15 +98,15 @@ struct URLSessionTransport: Transport {
         return URLSession(configuration: c)
     }()
 
-    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (Int?, String?) -> Void) {
+    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (Int?, String?, Data?) -> Void) {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
-        session.dataTask(with: req) { _, response, _ in
+        session.dataTask(with: req) { data, response, _ in
             let http = response as? HTTPURLResponse
-            completion(http?.statusCode, http?.value(forHTTPHeaderField: "Retry-After"))
+            completion(http?.statusCode, http?.value(forHTTPHeaderField: "Retry-After"), data)
         }.resume()
     }
 }

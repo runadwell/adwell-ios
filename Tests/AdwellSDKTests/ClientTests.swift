@@ -2,18 +2,18 @@ import XCTest
 @testable import AdwellSDK
 
 final class FakeTransport: Transport {
-    var answers: [(Int?, String?)]
+    var answers: [(Int?, String?, String?)]
     var bodies: [[String: Any]] = []
     var keys: [String] = []
     var urls: [URL] = []
-    init(_ answers: [(Int?, String?)]) { self.answers = answers }
+    init(_ answers: [(Int?, String?, String?)]) { self.answers = answers }
 
-    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (Int?, String?) -> Void) {
+    func post(_ url: URL, apiKey: String, body: Data, completion: @escaping (Int?, String?, Data?) -> Void) {
         urls.append(url)
         keys.append(apiKey)
         bodies.append(try! JSONSerialization.jsonObject(with: body) as! [String: Any])
-        let a = answers.isEmpty ? (202, nil) : answers.removeFirst()
-        completion(a.0, a.1)
+        let a = answers.isEmpty ? (202, nil, nil) : answers.removeFirst()
+        completion(a.0, a.1, a.2.map { Data($0.utf8) })
     }
 }
 
@@ -45,12 +45,16 @@ final class ClientTests: XCTestCase {
         return e
     }
 
+    var lines: [String] = []
+
     func client(_ t: Transport, acked: MemoryStore, timers: Timers, env: Environment? = nil) -> Client {
-        Client(identity: { self.id }, acked: acked, transport: t, env: env ?? self.env(), log: Log(), schedule: timers.schedule)
+        let log = Log()
+        log.sink = { self.lines.append($0) }
+        return Client(identity: { self.id }, acked: acked, transport: t, env: env ?? self.env(), log: log, schedule: timers.schedule)
     }
 
     func testSendsTheContractBodyOnceAndRemembersTheAck() {
-        let t = FakeTransport([(202, nil)]), acked = MemoryStore(), timers = Timers()
+        let t = FakeTransport([(202, nil, nil)]), acked = MemoryStore(), timers = Timers()
         let c = client(t, acked: acked, timers: timers)
         c.start(apiKey: "pk_test_x", endpoint: api, bridge: nil)
         c.drain()
@@ -85,7 +89,7 @@ final class ClientTests: XCTestCase {
     }
 
     func testRetriesWithBackoffAndRetryAfterThenStops() {
-        let t = FakeTransport([(nil, nil), (503, "120"), (202, nil)]), acked = MemoryStore(), timers = Timers()
+        let t = FakeTransport([(nil, nil, nil), (503, "120", nil), (202, nil, nil)]), acked = MemoryStore(), timers = Timers()
         let c = client(t, acked: acked, timers: timers, env: env(token: nil, storefront: nil))
         c.start(apiKey: "pk_test_x", endpoint: api, bridge: "flutter")
         c.drain()
@@ -104,20 +108,38 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(acked.value, id.installID)
     }
 
-    func testABadKeyStopsUntilNextLaunch() {
-        let t = FakeTransport([(401, nil)]), timers = Timers()
+    func testABadKeyStopsUntilNextLaunchAndSaysWhy() {
+        let t = FakeTransport([(401, nil, #"{"error":{"code":"invalid_key","message":"unknown or revoked key"}}"#)]), timers = Timers()
         let c = client(t, acked: MemoryStore(), timers: timers)
         c.start(apiKey: "pk_test_bad", endpoint: api, bridge: nil)
         c.drain()
         c.foreground(); c.drain()
         XCTAssertEqual(t.bodies.count, 1)
         XCTAssertTrue(timers.pending.allSatisfy { $0.0 == 2 }, "no retry scheduled")
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertTrue(lines[0].hasPrefix("[Adwell] Error: Adwell did not accept the API key. Adwell said: unknown or revoked key."), lines[0])
+        XCTAssertTrue(lines[0].hasSuffix("Nothing more is sent until the next launch."))
+    }
+
+    func testAKeyForAnotherAppNamesTheBundle() {
+        let t = FakeTransport([(403, nil, #"{"error":{"code":"app_mismatch","message":"key does not belong to this bundle_id and platform","field":"bundle_id"}}"#)])
+        let c = client(t, acked: MemoryStore(), timers: Timers())
+        c.start(apiKey: "pk_test_x", endpoint: api, bridge: nil)
+        c.drain()
+        XCTAssertTrue(lines[0].contains("belongs to another app") && lines[0].contains("co.smartreceipts.ios"), lines[0])
+    }
+
+    func testSuccessIsConfirmedOnce() {
+        let c = client(FakeTransport([(202, nil, nil)]), acked: MemoryStore(), timers: Timers())
+        c.start(apiKey: "pk_test_x", endpoint: api, bridge: nil)
+        c.drain()
+        XCTAssertEqual(lines, ["[Adwell] Connected: install \(id.installID) sent to api.example.test."])
     }
 
     func testStorefrontTimeoutSendsWithout() {
         var e = env()
         e.storefront = { _ in } // StoreKit never answers
-        let t = FakeTransport([(202, nil)]), timers = Timers()
+        let t = FakeTransport([(202, nil, nil)]), timers = Timers()
         let c = client(t, acked: MemoryStore(), timers: timers, env: e)
         c.start(apiKey: "pk_test_x", endpoint: api, bridge: nil)
         c.drain()
@@ -130,7 +152,7 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(Outcome.from(status: 202, retryAfter: nil), .acknowledged)
         XCTAssertEqual(Outcome.from(status: 429, retryAfter: "9999"), .retry(after: 3600))
         XCTAssertEqual(Outcome.from(status: 500, retryAfter: "soon"), .retry(after: nil))
-        XCTAssertEqual(Outcome.from(status: 403, retryAfter: nil), .stop(reason: "the key belongs to another bundle id or platform"))
+        if case .stop = Outcome.from(status: 400, retryAfter: nil) {} else { XCTFail("400 stops") }
         XCTAssertEqual(backoff(attempt: 9, retryAfter: nil), 900)
     }
 
